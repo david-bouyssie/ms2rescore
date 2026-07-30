@@ -5,11 +5,34 @@ on:
     types: [created]
   workflow_dispatch:
 
+env:
+  # MS²Rescore version this CLI bundle is expected to be built from.
+  # 3.2.1 is the last release whose rescoring_engine is Percolator/Mokapot-based;
+  # 4.x replaces it with the built-in ristretto engine and a different config schema,
+  # which would silently invalidate ms2rescore_config_v3.json.
+  EXPECTED_VERSION: "3.2.1"
+
 jobs:
   windows-cli:
     runs-on: windows-latest
     steps:
+      # NOTE: no "ref:" pin here on purpose. The v3.2.1 tag points at the upstream commit,
+      # which does NOT contain ms2rescore_cli.spec nor ms2rescore_cli_entry.py (both added
+      # on this fork's main). Checking out the tag would break the build. The version guard
+      # below is what actually protects against drifting to 4.x after syncing the fork.
       - uses: actions/checkout@v4
+
+      - name: Verify MS2Rescore source version
+        shell: pwsh
+        run: |
+          $m = Select-String -Path pyproject.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $m) { throw "Could not read version from pyproject.toml" }
+          $version = $m.Matches[0].Groups[1].Value
+          Write-Host "Detected MS2Rescore version: $version"
+          if ($version -ne "${{ env.EXPECTED_VERSION }}") {
+            throw "Expected ${{ env.EXPECTED_VERSION }} but found $version. The fork has probably been synced with upstream. Building this would produce a CLI whose config schema is incompatible with ms2rescore_config_v3.json."
+          }
+          echo "MS2RESCORE_VERSION=$version" >> $env:GITHUB_ENV
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -29,12 +52,27 @@ jobs:
       - name: Test built CLI exe
         run: dist/ms2rescore-cli/ms2rescore-cli.exe --help
 
+      # Guard against the PyInstaller + multiprocessing "spawn" failure on Windows:
+      # without multiprocessing.freeze_support() in the entry point, worker processes
+      # re-enter the CLI and argparse aborts on --multiprocessing-fork. The --help test
+      # above cannot catch this, since it never spawns a subprocess.
+      - name: Verify multiprocessing freeze_support is wired in
+        shell: pwsh
+        run: |
+          $spec = Get-Content ms2rescore_cli.spec -Raw
+          if ($spec -notmatch 'script_name\s*=\s*"ms2rescore_cli_entry\.py"') {
+            throw "ms2rescore_cli.spec must use ms2rescore_cli_entry.py as its entry point."
+          }
+          $entry = Get-Content ms2rescore_cli_entry.py -Raw
+          if ($entry -notmatch 'freeze_support\(\)') {
+            throw "ms2rescore_cli_entry.py must call multiprocessing.freeze_support()."
+          }
+          Write-Host "freeze_support wiring OK"
+
       - name: Zip the CLI bundle
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
-          if ([string]::IsNullOrEmpty($version)) { $version = "dev" }
-          $zipName = "MS2Rescore-CLI-$version-Windows64bit.zip"
+          $zipName = "MS2Rescore-CLI-v$env:MS2RESCORE_VERSION-Windows64bit.zip"
           Compress-Archive -Path dist/ms2rescore-cli/* -DestinationPath dist/$zipName
           echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
 
