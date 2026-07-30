@@ -9,7 +9,7 @@ from ms2rescore import __version__
 
 # Package info
 exe_name = "ms2rescore-cli"
-script_name = "ms2rescore/__main__.py"
+script_name = "ms2rescore_cli_entry.py"
 icon = "./img/ms2rescore.ico"
 location = os.getcwd()
 project = "ms2rescore"
